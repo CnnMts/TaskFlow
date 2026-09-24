@@ -38,21 +38,32 @@ class TaskFlowService(taskflow_pb2_grpc.TaskFlowServicer):
         self._slow = slow               # bonus B1
 
     # ---------- TODO(1) ----------
-    # CreateTask :
-    #   - title vide -> abort(INVALID_ARGUMENT, "title is required")
-    #   - created_by vide -> abort(INVALID_ARGUMENT, "created_by is required")
-    #   - génère id = str(uuid.uuid4()), statut initial TODO,
-    #     created_at = _now(), comments = []
-    #   - stocke sous le verrou, publie "CREATED"
-    #   - renvoie CreateTaskResponse(task=self._to_pb(t))
-    def CreateTask(self, request, context):
-        raise NotImplementedError()
 
+
+    def CreateTask(self, request, context):
+      if not request.title:
+        context.abort(grpc.StatusCode.INVALID_ARGUMENT, "title is required")
+      if not request.created_by:
+        context.abort(grpc.StatusCode.INVALID_ARGUMENT, "created_by is required")
+
+      task = Task(
+          id=str(uuid.uuid4()),
+          title=request.title,
+          status=Status.TODO,
+          created_by=request.created_by,
+          created_at=_now(),
+          comments=[],
+      )
+      with self._lock:
+          self._tasks[task.id] = task
+      self._publish("CREATED", task)
+      return CreateTaskResponse(task=self._to_pb(task))
+
+    
     # ---------- TODO(2) ----------
-    # GetTask : id inconnu -> NOT_FOUND "task <id> not found"
-    # (utilisez self._get_or_abort)
     def GetTask(self, request, context):
-        raise NotImplementedError()
+      task = self._get_or_abort(request.id, context)
+      return task
 
     # ---------- TODO(3) ----------
     # Server streaming : yield les tâches une par une.
