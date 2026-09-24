@@ -66,26 +66,41 @@ class TaskFlowService(taskflow_pb2_grpc.TaskFlowServicer):
     # ---------- TODO(3) ----------
     def ListTasks(self, request, context):
       with self.lock:
-        tasks_snapshot = list(self.tasks)  # ou self.tasks.values() selon la structure
-      status_filter = request.status_filter if request.HasField("status_filter") else None
-      assigned_filter = request.assigned_filter if request.HasField("assigned_filter") else None
+        tasks_snapshot = list(self.tasks)
+        status_filter = request.status_filter if request.HasField("status_filter") else None
+        assigned_filter = request.assigned_filter if request.HasField("assigned_filter") else None
       for task in tasks_snapshot:
-          if status_filter is not None and task.status != status_filter:
-              continue
-          if assigned_filter is not None and task.assigned_to != assigned_filter:
-              continue
-          yield task
+        if status_filter is not None and task.status != status_filter:
+            continue
+        if assigned_filter is not None and task.assigned_to != assigned_filter:
+            continue
+        yield task
 
     # ---------- TODO(4) ----------
-    # UpdateStatus (vérifications dans CET ordre) :
-    #   - tâche inconnue -> NOT_FOUND
-    #   - même statut -> INVALID_ARGUMENT "task already in status X"
-    #   - une tâche DONE ne peut plus changer de statut (ni TODO, ni
-    #     IN_PROGRESS) -> INVALID_ARGUMENT "cannot reopen a DONE task"
-    #   - sinon : mise à jour + événement "STATUS_CHANGED"
-    #     author = requested_by, message "alice a passé 'Rapport' à DONE"
     def UpdateStatus(self, request, context):
-        raise NotImplementedError()
+      task = self._get_or_abort(request.id, context)
+      if request.status_name == task.status_name:
+        context.abort(
+          grpc.StatusCode.INVALID_ARGUMENT,
+          f"task already in status {task.status_name}",
+          )
+
+      if task.status_name == "DONE":
+        context.abort(
+          grpc.StatusCode.INVALID_ARGUMENT,
+          "cannot reopen a DONE task",
+      )
+      old_status = task.status_name
+      task.status_name = request.status_name
+
+      event = Event(
+          type="STATUS_CHANGED",
+          author=request.requested_by,
+          message=f"{request.requested_by} a passé '{task.title}' à {task.status_name}",
+      )
+      task.events.append(event)
+
+      return task
 
     # ---------- TODO(5) ----------
     # AssignTask : new_assignee vide -> INVALID_ARGUMENT ;
@@ -93,6 +108,7 @@ class TaskFlowService(taskflow_pb2_grpc.TaskFlowServicer):
     # réassignation à la même personne -> INVALID_ARGUMENT
     # "task already assigned to X". Événement "ASSIGNED" (author = requested_by).
     def AssignTask(self, request, context):
+        
         raise NotImplementedError()
 
     # ---------- TODO(6) ----------
