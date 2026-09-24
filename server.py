@@ -38,8 +38,6 @@ class TaskFlowService(taskflow_pb2_grpc.TaskFlowServicer):
         self._slow = slow               # bonus B1
 
     # ---------- TODO(1) ----------
-
-
     def CreateTask(self, request, context):
       if not request.title:
         context.abort(grpc.StatusCode.INVALID_ARGUMENT, "title is required")
@@ -66,12 +64,17 @@ class TaskFlowService(taskflow_pb2_grpc.TaskFlowServicer):
       return task
 
     # ---------- TODO(3) ----------
-    # Server streaming : yield les tâches une par une.
-    # Filtres optionnels : HasField("status_filter") et
-    # HasField("assigned_filter"). Les deux filtres se combinent en ET.
-    # ⚠️ Copiez la liste SOUS le verrou, puis yield HORS du verrou.
     def ListTasks(self, request, context):
-        raise NotImplementedError()
+      with self.lock:
+        tasks_snapshot = list(self.tasks)  # ou self.tasks.values() selon la structure
+      status_filter = request.status_filter if request.HasField("status_filter") else None
+      assigned_filter = request.assigned_filter if request.HasField("assigned_filter") else None
+      for task in tasks_snapshot:
+          if status_filter is not None and task.status != status_filter:
+              continue
+          if assigned_filter is not None and task.assigned_to != assigned_filter:
+              continue
+          yield task
 
     # ---------- TODO(4) ----------
     # UpdateStatus (vérifications dans CET ordre) :
