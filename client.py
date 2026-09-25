@@ -38,7 +38,7 @@ def listen_events(stub, username, event_types = []):
 
 
 def print_task(task):
-    print(f"  [{STATUS_NAMES[task.status]:12}] {task.id[:8]}… "
+    print(f"  [{STATUS_NAMES[task.status]:12}] {task.id} "
           f"« {task.title} » → {task.assigned_to or 'non assignée'} "
           f"({len(task.comments)} commentaire(s))")
 
@@ -132,9 +132,32 @@ def main():
                 task = getTask(stub, T, True)
                 pass
             elif choice == "4":
-                # ---------- TODO(14) ----------
-                # Menu TODO/IN_PROGRESS/DONE -> UpdateStatus
-                # (requested_by=args.user).
+                task = getTask(stub, T)
+                if task is None:
+                    continue
+
+                new_status_input = input("Nouveau statut (TODO/IN_PROGRESS/DONE) : ").strip().upper()
+
+                if(not new_status_input):
+                    print("❌ Statut vide")
+                    continue
+
+                if(new_status_input == taskflow_pb2.TaskStatus.Name(task.status)):
+                    print(f"❌ La tâche est déjà dans le statut {new_status_input}.")
+                    continue
+
+                if new_status_input not in ["TODO", "IN_PROGRESS", "DONE"]:
+                    print("❌ Statut invalide. Veuillez entrer TODO, IN_PROGRESS ou DONE.")
+                    continue
+
+                new_status = taskflow_pb2.TaskStatus.Value(new_status_input)
+                request = taskflow_pb2.UpdateStatusRequest(id=task.id, new_status=new_status, requested_by=args.user)
+
+                try:
+                    stub.UpdateStatus(request, timeout=T)
+                    print(f"✅ Statut de la tâche {task.id} mis à jour vers {new_status_input}.")
+                except grpc.RpcError as e:
+                    print(f"❌ Erreur gRPC [{e.code().name}] : {e.details()}")
                 pass
             elif choice == "5":
                 # ---------- TODO(15) ----------
