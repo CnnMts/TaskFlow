@@ -160,8 +160,21 @@ def main():
                     print(f"❌ Erreur gRPC [{e.code().name}] : {e.details()}")
                 pass
             elif choice == "5":
-                # ---------- TODO(15) ----------
-                # AssignTask (requested_by=args.user).
+                task = getTask(stub, T)
+                if task is None:
+                    continue
+
+                new_assignee = input("Nouvel assigné : ").strip()
+                if not new_assignee:
+                    print("❌ Assigné vide")
+                    continue
+
+                request = taskflow_pb2.AssignTaskRequest(id=task.id, new_assignee=new_assignee, requested_by=args.user)
+                try:
+                    stub.AssignTask(request, timeout=T)
+                    print(f"✅ Tâche {task.id} réassignée à {new_assignee}.")
+                except grpc.RpcError as e:
+                    print(f"❌ Erreur gRPC [{e.code().name}] : {e.details()}")
                 pass
             elif choice == "6":
                 # ---------- TODO(16) ----------
