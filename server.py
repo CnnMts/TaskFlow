@@ -208,7 +208,32 @@ class TaskFlowService(taskflow_pb2_grpc.TaskFlowServicer):
 
     # ---------- TODO(9) ----------
     def SearchKeywords(self, request_iterator, context):
-        raise NotImplementedError()
+        total_requests = 0
+        results = []
+
+        with self._lock:
+            tasks_snapshot = list(self._tasks.values())
+
+        for entry in request_iterator:
+            keyword = entry.keyword
+            if not keyword:
+                context.abort(grpc.StatusCode.INVALID_ARGUMENT, "empty keyword")
+
+            total_requests += 1
+            needle = keyword.lower()
+            match_count = sum(
+                1 for t in tasks_snapshot
+                if needle in t["title"].lower() or needle in t["description"].lower()
+            )
+            results.append(
+                taskflow_pb2.SearchSummary.KeywordHit(
+                    keyword=keyword, match_count=match_count
+                )
+            )
+
+        return taskflow_pb2.SearchSummary(
+            total_requests=total_requests, results=results
+        )
 
     # ----- Utilitaires fournis -----
     def _get_or_abort(self, task_id: str, context) -> dict:
