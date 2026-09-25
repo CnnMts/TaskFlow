@@ -45,20 +45,20 @@ class TaskFlowService(taskflow_pb2_grpc.TaskFlowServicer):
         if not request.created_by:
             context.abort(grpc.StatusCode.INVALID_ARGUMENT, "created_by is required")
 
-        task = Task(
-            id=str(uuid.uuid4()),
-            title=request.title,
-            description=request.description,
-            status=Status.TODO,
-            assigned_to=request.assigned_to,
-            created_by=request.created_by,
-            created_at=_now(),
-            comments=[],
-        )
+        task = {
+            "id": str(uuid.uuid4()),
+            "title": request.title,
+            "description": request.description,
+            "status": taskflow_pb2.TaskStatus.TODO,
+            "assigned_to": request.assigned_to,
+            "created_by": request.created_by,
+            "created_at": _now(),
+            "comments": [],
+        }
         with self._lock:
             self._tasks[task.id] = task
         self._publish("CREATED", task)
-        return CreateTaskResponse(task=self._to_pb(task))
+        return taskflow_pb2.CreateTaskResponse(task=self._to_pb(task))
 
 
     # ---------- TODO(2) ----------
@@ -91,10 +91,10 @@ class TaskFlowService(taskflow_pb2_grpc.TaskFlowServicer):
             if request.new_status == task.status:
                 context.abort(
                     grpc.StatusCode.INVALID_ARGUMENT,
-                    f"Task already in status {TaskStatus.Name(task.status)}",
+                    f"Task already in status {taskflow_pb2.TaskStatus.Name(task.status)}",
                 )
 
-            if task.status == Status.DONE:
+            if task.status == taskflow_pb2.TaskStatus.DONE:
                 context.abort(
                     grpc.StatusCode.INVALID_ARGUMENT,
                     "Cannot reopen a DONE task",
@@ -106,7 +106,7 @@ class TaskFlowService(taskflow_pb2_grpc.TaskFlowServicer):
             "STATUS_CHANGED",
             task,
             author=request.requested_by,
-            message=f"{request.requested_by} a passé '{task.title}' à {TaskStatus.Name(task.status)}",
+            message=f"{request.requested_by} a passé '{task.title}' à {taskflow_pb2.TaskStatus.Name(task.status)}",
         )
         return self._to_pb(task)
 
@@ -144,12 +144,11 @@ class TaskFlowService(taskflow_pb2_grpc.TaskFlowServicer):
 
         task = self._get_or_abort(request.id, context)
 
-        comment = Comment(
-            author=request.author,
-            text=request.text,
-            created_at=_now(),
-        )
-
+        comment = {
+            "author": request.author,
+            "text": request.text,
+            "created_at": _now(),
+        }
         with self._lock:
             task.comments.append(comment)
 
