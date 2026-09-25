@@ -207,11 +207,15 @@ def main():
                     print(f"❌ Erreur gRPC [{e.code().name}] : {e.details()}")
                 pass
             elif choice == "8":
-                # ---------- TODO(18) ----------
-                # Client streaming : demander des mots-clés un par un
-                # (ligne vide = fin), construire un GÉNÉRATEUR Python qui
-                # yield les SearchEntry, appeler SearchKeywords(generator)
-                # et afficher le SearchSummary (total + résultats).
+                while True:
+                    try:
+                        summary = stub.SearchKeywords(_read_keywords())
+                        print(f"Total : {summary.total}")
+                        for result in summary.results:
+                            print(f"- {result}")
+                    except grpc.RpcError as e:
+                        print(f"❌ Erreur gRPC [{e.code().name}] : {e.details()}")
+
                 pass
             elif choice == "9":
                 print(f"{len(received_events)} événement(s) reçu(s)")
@@ -247,6 +251,14 @@ def getTask(stub, T, display=False):
             print(f"❌ Erreur gRPC [{e.code().name}] : {e.details()}")
         
         return None
+
+def _read_keywords():
+    # Tant qu'il n'a pas envoyer vide, on attend les autres mots-clés
+    while True:
+        keyword = input("Mot-clé (ligne vide pour terminer) : ").strip()
+        if not keyword:
+            break
+        yield taskflow_pb2.SearchEntry(keyword=keyword)
 
 if __name__ == "__main__":
     main()
