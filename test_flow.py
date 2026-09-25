@@ -25,34 +25,139 @@ def expect_error(fn, code):
 
 
 def run_tests(stub, log_path):
-    # --- TODO(19) : scénario nominal ---
-    # 1. Créer "Rapport" assignée à alice (created_by="alice") -> récupérer l'id
-    # 2. GetTask(id) -> titre == "Rapport", statut == TODO
-    # 3. UpdateStatus(id, DONE) -> statut == DONE
-    # 4. ListTasks() -> contient au moins 1 tâche ;
-    #    ListTasks(status_filter=DONE) -> exactement cette tâche
+    default_timeout = 3
 
-    # --- TODO(20) : erreurs attendues ---
-    # expect_error(lambda: stub.GetTask(pb.GetTaskRequest(
-    #     id="inconnu"), timeout=3), grpc.StatusCode.NOT_FOUND)
-    # Ajouter : titre vide -> INVALID_ARGUMENT ;
-    # UpdateStatus au même statut -> INVALID_ARGUMENT ;
-    # DONE -> IN_PROGRESS -> INVALID_ARGUMENT ;
-    # DeleteTask par "bob" -> PERMISSION_DENIED ;
-    # DeleteTask par "alice" puis GetTask -> NOT_FOUND.
+    # Créer une tâche "Rapport" assignée à "alice"
+    request_create = pb.CreateTaskRequest(title="Rapport", assigned_to="alice", created_by="alice")
+    response_create = stub.CreateTask(request_create, timeout=default_timeout)
+    task_id = response_create.task.id
 
-    # --- TODO(21) : client streaming ---
+    # Récupérer la tâche par son id et vérifier son titre et son statut
+    task = stub.GetTask(pb.GetTaskRequest(id=task_id), timeout=default_timeout)
+    assert task.title == "Rapport", f"titre inattendu : {task.title}"
+    assert task.status == pb.TODO, f"statut inattendu : {task.status}"
+
+    # Mettre à jour le statut de la tâche à DONE
+    stub.UpdateStatus(pb.UpdateStatusRequest(id=task_id, new_status=pb.DONE), timeout=default_timeout)
+
+    # Vérifier que le statut est bien à DONE
+    task = stub.GetTask(pb.GetTaskRequest(id=task_id), timeout=default_timeout)
+    assert task.status == pb.DONE, f"statut inattendu après mise à jour : {task.status}"
+
+    # Vérifier que la liste des tâches contient au moins une tâche
+    tasks_list = list(stub.ListTasks(pb.ListTasksRequest(), timeout=default_timeout))
+    print(f"Liste des tâches : {len(tasks_list)} tâches")
+    assert len(tasks_list) >= 1, "la liste des tâches est vide"
+
+    # Vérifier qu'on a exactement une tâche avec le statut DONE
+    tasks_list_filtered = list(stub.ListTasks(pb.ListTasksRequest(status_filter=pb.DONE), timeout=default_timeout))
+    assert len(tasks_list_filtered) == 1, "la liste des tâches filtrées est vide"
+
+    # Tâche inconnue : GetTask doit renvoyer NOT_FOUND
+    try: 
+        stub.GetTask(pb.GetTaskRequest(id="inconnu"), timeout=default_timeout)
+    except grpc.RpcError as e:
+        assert e.code() == grpc.StatusCode.NOT_FOUND, f"attendu NOT_FOUND, reçu {e.code()}"
+
+    # Titre vide : CreateTask doit renvoyer INVALID_ARGUMENT
+    try:
+        request_title_empty = pb.CreateTaskRequest(title="", assigned_to="alice", created_by="alice")
+        stub.CreateTask(request_title_empty, timeout=default_timeout)
+    except grpc.RpcError as e:
+        assert e.code() == grpc.StatusCode.INVALID_ARGUMENT, f"attendu INVALID_ARGUMENT, reçu {e.code()}"
+
+    # UpdateStatus au même statut : doit renvoyer INVALID_ARGUMENT
+    try:
+        request_same_status = pb.UpdateStatusRequest(id=task_id, new_status=pb.DONE)
+        stub.UpdateStatus(request_same_status, timeout=default_timeout)
+    except grpc.RpcError as e:
+        assert e.code() == grpc.StatusCode.INVALID_ARGUMENT, f"attendu INVALID_ARGUMENT, reçu {e.code()}"
+
+    # DONE -> IN_PROGRESS -> INVALID_ARGUMENT
+    try:
+        request_done_to_in_progress = pb.UpdateStatusRequest(id=task_id, new_status=pb.IN_PROGRESS)
+        stub.UpdateStatus(request_done_to_in_progress, timeout=default_timeout)
+    except grpc.RpcError as e:
+        assert e.code() == grpc.StatusCode.INVALID_ARGUMENT, f"attendu INVALID_ARGUMENT, reçu {e.code()}"
+
+    # DeleteTask par "bob" -> PERMISSION_DENIED
+    try:
+        request_delete = pb.DeleteTaskRequest(id=task_id, requested_by="bob")
+        stub.DeleteTask(request_delete, timeout=default_timeout)
+    except grpc.RpcError as e:
+        assert e.code() == grpc.StatusCode.PERMISSION_DENIED, f"attendu PERMISSION_DENIED, reçu {e.code()}"
+
+    # DeleteTask par "alice" puis GetTask -> NOT_FOUND
+    try:
+        request_delete_not_found = pb.DeleteTaskRequest(id=task_id, requested_by="alice")
+        stub.DeleteTask(request_delete_not_found, timeout=default_timeout)
+        stub.GetTask(pb.GetTaskRequest(id=task_id), timeout=default_timeout)
+    except grpc.RpcError as e:
+        assert e.code() == grpc.StatusCode.NOT_FOUND, f"attendu NOT_FOUND, reçu {e.code()}"
+
     # Créer 3 tâches de titres "alpha", "beta", "alpha beta".
-    # Envoyer ["alpha", "BETA"] en client streaming ->
-    # total_requests == 2, matchs alpha == 2, BETA == 2 (casse ignorée).
-    # Un keyword vide dans le flux -> INVALID_ARGUMENT.
+    stub.CreateTask(pb.CreateTaskRequest(
+        title="alpha", assigned_to="", created_by="alice"), timeout=default_timeout)
+    stub.CreateTask(pb.CreateTaskRequest(
+        title="beta", assigned_to="", created_by="alice"), timeout=default_timeout)
+    stub.CreateTask(pb.CreateTaskRequest(
+        title="alpha beta", assigned_to="", created_by="alice"), timeout=default_timeout)
 
-    # --- TODO(24) : Subscribe ---
-    # Sur un channel séparé, s'abonner avec event_types=["DELETED"] ;
-    # lire le flux dans un threading.Thread qui pousse dans une queue.Queue.
-    # time.sleep(0.3) pour laisser l'abonnement s'établir, puis créer et
-    # supprimer une tâche : q.get(timeout=2) doit renvoyer un DELETED
-    # (le CREATED a été filtré). Fermez ensuite ce channel.
+    # Envoyer les mots
+    def gen_keywords(keywords):
+        for kw in keywords:
+            yield pb.SearchEntry(keyword=kw)
+
+    # Check que le résumé contient bien 2 requêtes et 2 matchs pour "alpha" et "BETA"
+    summary = stub.SearchKeywords(gen_keywords(["alpha", "BETA"]), timeout=3)
+    assert summary.total_requests == 2, f"attendu 2, reçu {summary.total_requests}"
+
+    hits = {r.keyword: r.match_count for r in summary.results}
+    assert hits.get("alpha") == 2, f"matchs alpha inattendus : {hits.get('alpha')}"
+    assert hits.get("BETA") == 2, f"matchs BETA inattendus : {hits.get('BETA')}"
+
+    # Un keyword vide dans le flux -> INVALID_ARGUMENT
+    expect_error(
+        lambda: stub.SearchKeywords(gen_keywords(["alpha", ""]), timeout=3),
+        grpc.StatusCode.INVALID_ARGUMENT)
+
+    # Création du channel et du stub pour l'abonnement
+    sub_channel = grpc.insecure_channel(f"localhost:{PORT}")
+    sub_stub = taskflow_pb2_grpc.TaskFlowStub(sub_channel)
+
+    q = queue.Queue()
+
+    # Fonction écouter
+    def listen():
+        try:
+            for event in sub_stub.Subscribe(
+                    pb.SubscribeRequest(username="testeur", event_types=["DELETED"])):
+                q.put(event)
+        except grpc.RpcError:
+            pass  # channel fermé -> stream coupé, normal
+
+    t = threading.Thread(target=listen, daemon=True)
+    t.start()
+
+    # laisser l'abonnement s'établir côté serveur
+    time.sleep(0.3)
+
+    # On crée une tâche "ToDelete" et on la supprime : l'événement DELETED doit être reçu
+    resp = stub.CreateTask(pb.CreateTaskRequest(
+        title="ToDelete", description="d", assigned_to="",
+        created_by="alice"), timeout=3)
+    task_id = resp.task.id
+
+    stub.DeleteTask(pb.DeleteTaskRequest(
+        id=task_id, requested_by="alice"), timeout=3)
+
+    # On check que l'événement DELETED est bien reçu dans la queue
+    event = q.get(timeout=2)
+    assert event.event_type == "DELETED", f"attendu DELETED, reçu {event.event_type}"
+    assert event.task_id == task_id, "task_id de l'événement incorrect"
+
+    # On ferme la connection
+    sub_channel.close()
 
     # --- TODO(25) : Étape 5 — metadata x-user ---
     # Le stdout du serveur est écrit dans log_path. Vérifiez qu'il contient
