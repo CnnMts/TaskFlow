@@ -82,13 +82,13 @@ class TaskFlowService(taskflow_pb2_grpc.TaskFlowServicer):
       if request.status_name == task.status_name:
         context.abort(
           grpc.StatusCode.INVALID_ARGUMENT,
-          f"task already in status {task.status_name}",
+          f"Task already in status {task.status_name}",
           )
 
       if task.status_name == "DONE":
         context.abort(
           grpc.StatusCode.INVALID_ARGUMENT,
-          "cannot reopen a DONE task",
+          "Cannot reopen a DONE task",
       )
       old_status = task.status_name
       task.status_name = request.status_name
@@ -103,13 +103,35 @@ class TaskFlowService(taskflow_pb2_grpc.TaskFlowServicer):
       return task
 
     # ---------- TODO(5) ----------
-    # AssignTask : new_assignee vide -> INVALID_ARGUMENT ;
-    # id inconnu -> NOT_FOUND ;
-    # réassignation à la même personne -> INVALID_ARGUMENT
-    # "task already assigned to X". Événement "ASSIGNED" (author = requested_by).
     def AssignTask(self, request, context):
-        
-        raise NotImplementedError()
+        if not request.new_assignee:
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT, "new_assignee is required")
+
+        task = self.tasks.get(request.task_id)
+        if task is None:
+            context.abort(grpc.StatusCode.NOT_FOUND, f"task {request.task_id} not found")
+
+        if task.assigned_to == request.new_assignee:
+            context.abort(
+                grpc.StatusCode.INVALID_ARGUMENT,
+                f"task already assigned to {request.new_assignee}",
+            )
+
+        previous_assignee = task.assigned_to
+        task.assigned_to = request.new_assignee
+
+        event = self._create_event(
+            task_id=task.id,
+            type="ASSIGNED",
+            author=request.requested_by,
+            metadata={
+                "previous_assignee": previous_assignee,
+                "new_assignee": request.new_assignee,
+            },
+        )
+        task.events.append(event)
+
+        return task
 
     # ---------- TODO(6) ----------
     # AddComment : texte vide -> INVALID_ARGUMENT ;
