@@ -177,8 +177,21 @@ def main():
                     print(f"❌ Erreur gRPC [{e.code().name}] : {e.details()}")
                 pass
             elif choice == "6":
-                # ---------- TODO(16) ----------
-                # AddComment (texte multi-mots, author=args.user).
+                task = getTask(stub, T)
+                if task is None:
+                    continue
+
+                text = input("Commentaire :").strip()
+                if not  text:
+                    print("❌ Aucun commentaire saisi")
+                    continue
+
+                request = taskflow_pb2.AddCommentRequest(id=task.id, text=text, author=args.user)
+                try:
+                    stub.AddComment(request, timeout=T)
+                    print(f"✅ Commentaire ajouté à la tâche {task.id}.")
+                except grpc.RpcError as e:
+                    print(f"❌ Erreur gRPC [{e.code().name}] : {e.details()}")
                 pass
             elif choice == "7":
                 # ---------- TODO(17) ----------
