@@ -28,12 +28,8 @@ def _status_name(value: int) -> str:
 
 class TaskFlowService(taskflow_pb2_grpc.TaskFlowServicer):
     def __init__(self, slow: bool = False):
-        # Modèle interne : dict id -> dict Python. On construit un message
-        # protobuf NEUF à chaque réponse (voir self._to_pb) : on ne renvoie
-        # jamais un objet partagé qu'un autre thread pourrait modifier.
         self._tasks = {}
         self._lock = threading.RLock()
-        # une queue d'événements par abonné
         self._subscribers = []          # liste de (username, event_types, Queue)
         self._subs_lock = threading.Lock()
         self._slow = slow               # bonus B1
@@ -56,16 +52,19 @@ class TaskFlowService(taskflow_pb2_grpc.TaskFlowServicer):
             "comments": [],
         }
         with self._lock:
-            self._tasks[task.id] = task
-        self._publish("CREATED", task)
-        return taskflow_pb2.CreateTaskResponse(task=self._to_pb(task))
+            self._tasks[task["id"]] = task
 
+        self._publish(
+            "CREATED", task,
+            author=task["created_by"],
+            message=f"{task['created_by']} a créé '{task['title']}'",
+        )
+        return taskflow_pb2.CreateTaskResponse(task=self._to_pb(task))
 
     # ---------- TODO(2) ----------
     def GetTask(self, request, context):
         task = self._get_or_abort(request.id, context)
         return self._to_pb(task)
-
 
     # ---------- TODO(3) ----------
     def ListTasks(self, request, context):
@@ -76,40 +75,39 @@ class TaskFlowService(taskflow_pb2_grpc.TaskFlowServicer):
         assigned_filter = request.assigned_filter if request.HasField("assigned_filter") else None
 
         for task in tasks_snapshot:
-            if status_filter is not None and task.status != status_filter:
+            if status_filter is not None and task["status"] != status_filter:
                 continue
-            if assigned_filter is not None and task.assigned_to != assigned_filter:
+            if assigned_filter is not None and task["assigned_to"] != assigned_filter:
                 continue
             yield self._to_pb(task)
-
 
     # ---------- TODO(4) ----------
     def UpdateStatus(self, request, context):
         task = self._get_or_abort(request.id, context)
 
         with self._lock:
-            if request.new_status == task.status:
+            if request.new_status == task["status"]:
                 context.abort(
                     grpc.StatusCode.INVALID_ARGUMENT,
-                    f"Task already in status {taskflow_pb2.TaskStatus.Name(task.status)}",
+                    f"Task already in status {taskflow_pb2.TaskStatus.Name(task['status'])}",
                 )
 
-            if task.status == taskflow_pb2.TaskStatus.DONE:
+            if task["status"] == taskflow_pb2.TaskStatus.DONE:
                 context.abort(
                     grpc.StatusCode.INVALID_ARGUMENT,
                     "Cannot reopen a DONE task",
                 )
 
-            task.status = request.new_status
+            task["status"] = request.new_status
 
         self._publish(
             "STATUS_CHANGED",
             task,
             author=request.requested_by,
-            message=f"{request.requested_by} a passé '{task.title}' à {taskflow_pb2.TaskStatus.Name(task.status)}",
+            message=f"{request.requested_by} a passé '{task['title']}' à "
+                    f"{taskflow_pb2.TaskStatus.Name(task['status'])}",
         )
         return self._to_pb(task)
-
 
     # ---------- TODO(5) ----------
     def AssignTask(self, request, context):
@@ -119,25 +117,24 @@ class TaskFlowService(taskflow_pb2_grpc.TaskFlowServicer):
         task = self._get_or_abort(request.id, context)
 
         with self._lock:
-            if task.assigned_to == request.new_assignee:
+            if task["assigned_to"] == request.new_assignee:
                 context.abort(
                     grpc.StatusCode.INVALID_ARGUMENT,
                     f"task already assigned to {request.new_assignee}",
                 )
-            previous_assignee = task.assigned_to
-            task.assigned_to = request.new_assignee
+            previous_assignee = task["assigned_to"]
+            task["assigned_to"] = request.new_assignee
 
         self._publish(
             "ASSIGNED",
             task,
             author=request.requested_by,
-            message=f"{request.requested_by} a assigné '{task.title}' à {request.new_assignee}"
+            message=f"{request.requested_by} a assigné '{task['title']}' à {request.new_assignee}"
                     f" (précédemment {previous_assignee or 'personne'})",
         )
         return self._to_pb(task)
 
-
-    #---------- TODO(6) ----------
+    # ---------- TODO(6) ----------
     def AddComment(self, request, context):
         if not request.text:
             context.abort(grpc.StatusCode.INVALID_ARGUMENT, "text is required")
@@ -150,32 +147,34 @@ class TaskFlowService(taskflow_pb2_grpc.TaskFlowServicer):
             "created_at": _now(),
         }
         with self._lock:
-            task.comments.append(comment)
+            task["comments"].append(comment)
 
         self._publish(
             "COMMENTED",
             task,
             author=request.author,
-            message=f"{request.author} a commenté '{task.title}'",
+            message=f"{request.author} a commenté '{task['title']}'",
         )
         return self._to_pb(task)
+
     # ---------- TODO(7) ----------
     def DeleteTask(self, request, context):
-        task = self.tasks.get(request.id)
-        if task is None:
-            context.abort(grpc.StatusCode.NOT_FOUND, f"task {request.id} not found")
+        with self._lock:
+            task = self._tasks.get(request.id)
+            if task is None:
+                context.abort(grpc.StatusCode.NOT_FOUND, f"task {request.id} not found")
 
-        if request.requested_by != task.created_by:
-            context.abort(grpc.StatusCode.PERMISSION_DENIED,
-                       "only the creator can delete this task")
+            if request.requested_by != task["created_by"]:
+                context.abort(grpc.StatusCode.PERMISSION_DENIED,
+                               "only the creator can delete this task")
 
-        del self.tasks[request.id]
+            del self._tasks[request.id]
 
-        self._emit_event(
-            event_type="DELETED",
-            task_id=request.id,
+        self._publish(
+            "DELETED",
+            task,
             author=request.requested_by,
-            message=f"{request.requested_by} a supprimé '{task.title}'",
+            message=f"{request.requested_by} a supprimé '{task['title']}'",
         )
 
         return taskflow_pb2.Empty()
@@ -192,7 +191,6 @@ class TaskFlowService(taskflow_pb2_grpc.TaskFlowServicer):
 
         return self._event_stream(entry)
 
-    # _event_stream (générateur) :
     def _event_stream(self, entry):
         username, event_types, q = entry
         try:
@@ -209,21 +207,38 @@ class TaskFlowService(taskflow_pb2_grpc.TaskFlowServicer):
                     self._subscribers.remove(entry)
 
     # ---------- TODO(9) ----------
-    # SearchKeywords (client streaming) :
-    #   - itérer sur les requêtes entrantes (for entry in request_iterator)
-    #   - keyword vide -> abort(INVALID_ARGUMENT, "empty keyword")
-    #     (attention : abort dans un client-streaming annule tout le flux)
-    #   - pour chaque keyword : compter les tâches dont le titre OU la
-    #     description contient le keyword (insensible à la casse)
-    #   - renvoyer SearchSummary(total_requests=..., results=[
-    #         SearchSummary.KeywordHit(keyword=..., match_count=...), ...])
     def SearchKeywords(self, request_iterator, context):
-        raise NotImplementedError()
+        total_requests = 0
+        results = []
+
+        with self._lock:
+            tasks_snapshot = list(self._tasks.values())
+
+        for entry in request_iterator:
+            keyword = entry.keyword
+            if not keyword:
+                context.abort(grpc.StatusCode.INVALID_ARGUMENT, "empty keyword")
+
+            total_requests += 1
+            needle = keyword.lower()
+            match_count = sum(
+                1 for t in tasks_snapshot
+                if needle in t["title"].lower() or needle in t["description"].lower()
+            )
+            results.append(
+                taskflow_pb2.SearchSummary.KeywordHit(
+                    keyword=keyword, match_count=match_count
+                )
+            )
+
+        return taskflow_pb2.SearchSummary(
+            total_requests=total_requests, results=results
+        )
 
     # ----- Utilitaires fournis -----
     def _get_or_abort(self, task_id: str, context) -> dict:
-        """Renvoie la tâche stockée ou abort NOT_FOUND (à appeler sous le verrou)."""
-        t = self._tasks.get(task_id)
+        with self._lock:
+            t = self._tasks.get(task_id)
         if t is None:
             context.abort(grpc.StatusCode.NOT_FOUND, f"task {task_id} not found")
         return t
@@ -238,9 +253,9 @@ class TaskFlowService(taskflow_pb2_grpc.TaskFlowServicer):
             created_by=t["created_by"], created_at=t["created_at"],
             comments=comments)
 
-    def _publish(self, event_type: str, task_id: str, author: str, message: str):
-        """Envoie un événement à tous les abonnés (fourni)."""
-        event = taskflow_pb2.TaskEvent(event_type=event_type, task_id=task_id,
+    def _publish(self, event_type: str, task: dict, author: str = "", message: str = ""):
+        """Envoie un événement à tous les abonnés."""
+        event = taskflow_pb2.TaskEvent(event_type=event_type, task_id=task["id"],
                                        author=author, message=message)
         with self._subs_lock:
             for _, _, q in self._subscribers:
@@ -253,9 +268,6 @@ def serve():
     parser.add_argument("--slow", action="store_true", help="bonus B1")
     args = parser.parse_args()
 
-    # Chaque RPC en cours occupe un thread du pool ; un abonné Subscribe
-    # en occupe un EN PERMANENCE -> prévoir large.
-    # Étape 5 : ajouter interceptors=[LoggingInterceptor()]
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=32))
     taskflow_pb2_grpc.add_TaskFlowServicer_to_server(TaskFlowService(args.slow), server)
     server.add_insecure_port(f"[::]:{args.port}")
