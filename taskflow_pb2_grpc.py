@@ -2,7 +2,6 @@
 """Client and server classes corresponding to protobuf-defined services."""
 import grpc
 import warnings
-
 import taskflow_pb2 as taskflow__pb2
 
 GRPC_GENERATED_VERSION = '1.84.0'

@@ -23,15 +23,32 @@ def print_event(event):
 # Entourez le tout d'un try/except grpc.RpcError : si le serveur tombe,
 # afficher UNE ligne propre (code + details), pas une traceback.
 # (CANCELLED = c'est nous qui quittons : ne rien afficher.)
-def listen_events(stub, username, event_types):
-    raise NotImplementedError()
+def listen_events(stub, username, event_types = []):
+    try:
+        stream = stub.Subscribe(taskflow_pb2.SubscribeRequest(username=username, event_types=event_types))
+        for event in stream:
+            received_events.append(event)
+            print_event(event)
+
+    except grpc.RpcError as e:
+        # (CANCELLED = c'est nous qui quittons : ne rien afficher.)
+        if e.code() == grpc.StatusCode.CANCELLED:
+            return
+        print(f"[listen_events] Connexion au serveur perdue : {e.code()} - {e.details()}")
 
 
 def print_task(task):
-    print(f"  [{STATUS_NAMES[task.status]:12}] {task.id[:8]}… "
+    print(f"  [{STATUS_NAMES[task.status]:12}] {task.id} "
           f"« {task.title} » → {task.assigned_to or 'non assignée'} "
           f"({len(task.comments)} commentaire(s))")
 
+def print_comment(comments):
+    if not comments:
+        print("    (aucun commentaire)")
+
+    for c in comments:
+        date_str = c.created_at.ToDatetime().isoformat()
+        print(f"    - [{date_str}] {c.author} : {c.text}")
 
 def main():
     parser = argparse.ArgumentParser(description="Client TaskFlow")
@@ -68,44 +85,137 @@ def main():
         try:
             choice = input("choix > ").strip()
             if choice == "1":
-                # ---------- TODO(11) ----------
-                # Demander title/description/assigné, appeler CreateTask
-                # (created_by=args.user, timeout=T), afficher l'id retourné.
+                print("--------- Création d'une tâche ---------")
+                title = input("Titre : ").strip()
+                description = input("Description : ").strip()
+                assigned_to = input("Assigné à : ").strip()
+
+                request = taskflow_pb2.CreateTaskRequest(
+                    title=title,
+                    description=description,
+                    assigned_to=assigned_to,
+                    created_by=args.user
+                )
+                response = stub.CreateTask(request, timeout=T)
+                print(f"✅ Tâche créée avec l'id : {response}")
                 pass
             elif choice == "2":
+                status_input = input("Statut (TODO/IN_PROGRESS/DONE, vide = tous) : ").strip().upper()
+                assigned_to_input = input("Assigné à (vide = tous) : ").strip()
+
+                filterRequest = {}
+                if status_input:
+                    filterRequest["status_filter"] = taskflow_pb2.TaskStatus.Value(status_input)
+                if assigned_to_input:
+                    filterRequest["assigned_filter"] = assigned_to_input
+
+                request = taskflow_pb2.ListTasksRequest(**filterRequest)
+
+                try:
+                    count = 0
+                    for task in stub.ListTasks(request, timeout=T):
+                        count += 1
+                        print_task(task)
+                        print_comment(task.comments)
+                    
+                    if(count == 0):
+                        print("\033[31mAucune tâche trouvée avec les filtres spécifiés.\033[0m")
+                except grpc.RpcError as e:
+                    print(f"❌ Erreur gRPC [{e.code().name}] : {e.details()}")
+
                 # ---------- TODO(12) ----------
                 # Proposer un filtre statut (vide = tous) et un filtre
                 # assigné (vide = tous), appeler ListTasks en streaming.
                 # Filtre vide -> NE PAS affecter le champ optional.
                 pass
             elif choice == "3":
-                # ---------- TODO(13) ----------
-                # GetTask : afficher la tâche ET ses commentaires
-                # (auteur, date ISO via c.created_at.ToDatetime(), texte).
+                task = getTask(stub, T, True)
                 pass
             elif choice == "4":
-                # ---------- TODO(14) ----------
-                # Menu TODO/IN_PROGRESS/DONE -> UpdateStatus
-                # (requested_by=args.user).
+                task = getTask(stub, T)
+                if task is None:
+                    continue
+
+                new_status_input = input("Nouveau statut (TODO/IN_PROGRESS/DONE) : ").strip().upper()
+
+                if(not new_status_input):
+                    print("❌ Statut vide")
+                    continue
+
+                if(new_status_input == taskflow_pb2.TaskStatus.Name(task.status)):
+                    print(f"❌ La tâche est déjà dans le statut {new_status_input}.")
+                    continue
+
+                if new_status_input not in ["TODO", "IN_PROGRESS", "DONE"]:
+                    print("❌ Statut invalide. Veuillez entrer TODO, IN_PROGRESS ou DONE.")
+                    continue
+
+                new_status = taskflow_pb2.TaskStatus.Value(new_status_input)
+                request = taskflow_pb2.UpdateStatusRequest(id=task.id, new_status=new_status, requested_by=args.user)
+
+                try:
+                    stub.UpdateStatus(request, timeout=T)
+                    print(f"✅ Statut de la tâche {task.id} mis à jour vers {new_status_input}.")
+                except grpc.RpcError as e:
+                    print(f"❌ Erreur gRPC [{e.code().name}] : {e.details()}")
                 pass
             elif choice == "5":
-                # ---------- TODO(15) ----------
-                # AssignTask (requested_by=args.user).
+                task = getTask(stub, T)
+                if task is None:
+                    continue
+
+                new_assignee = input("Nouvel assigné : ").strip()
+                if not new_assignee:
+                    print("❌ Assigné vide")
+                    continue
+
+                request = taskflow_pb2.AssignTaskRequest(id=task.id, new_assignee=new_assignee, requested_by=args.user)
+                try:
+                    stub.AssignTask(request, timeout=T)
+                    print(f"✅ Tâche {task.id} réassignée à {new_assignee}.")
+                except grpc.RpcError as e:
+                    print(f"❌ Erreur gRPC [{e.code().name}] : {e.details()}")
                 pass
             elif choice == "6":
-                # ---------- TODO(16) ----------
-                # AddComment (texte multi-mots, author=args.user).
+                task = getTask(stub, T)
+                if task is None:
+                    continue
+
+                text = input("Commentaire :").strip()
+                if not  text:
+                    print("❌ Aucun commentaire saisi")
+                    continue
+
+                request = taskflow_pb2.AddCommentRequest(id=task.id, text=text, author=args.user)
+                try:
+                    stub.AddComment(request, timeout=T)
+                    print(f"✅ Commentaire ajouté à la tâche {task.id}.")
+                except grpc.RpcError as e:
+                    print(f"❌ Erreur gRPC [{e.code().name}] : {e.details()}")
                 pass
             elif choice == "7":
-                # ---------- TODO(17) ----------
-                # DeleteTask (requested_by=args.user).
+                task_id = input("ID de la tâche à supprimer : ").strip()
+                if not task_id:
+                    print("❌ ID de tâche vide")
+                    continue
+
+                request = taskflow_pb2.DeleteTaskRequest(id=task.id, requested_by=args.user)
+                try:
+                    stub.DeleteTask(request)
+                    print(f"✅ Tâche {task.id} supprimée.")
+                except grpc.RpcError as e:
+                    print(f"❌ Erreur gRPC [{e.code().name}] : {e.details()}")
                 pass
             elif choice == "8":
-                # ---------- TODO(18) ----------
-                # Client streaming : demander des mots-clés un par un
-                # (ligne vide = fin), construire un GÉNÉRATEUR Python qui
-                # yield les SearchEntry, appeler SearchKeywords(generator)
-                # et afficher le SearchSummary (total + résultats).
+                while True:
+                    try:
+                        summary = stub.SearchKeywords(_read_keywords())
+                        print(f"Total : {summary.total}")
+                        for result in summary.results:
+                            print(f"- {result}")
+                    except grpc.RpcError as e:
+                        print(f"❌ Erreur gRPC [{e.code().name}] : {e.details()}")
+
                 pass
             elif choice == "9":
                 print(f"{len(received_events)} événement(s) reçu(s)")
@@ -119,6 +229,36 @@ def main():
             break
     channel.close()
 
+def getTask(stub, T, display=False): 
+    task_id  = input("ID de la tâche : ").strip()
+    if(not task_id):
+        print("❌ ID de tâche vide")
+        return None
+    request = taskflow_pb2.GetTaskRequest(id=task_id)
+    try:
+        task = stub.GetTask(request, timeout=T)
+
+        # Si on doit affiché, on affiche la tâche et ses commentaires
+        if display:
+            print_task(task)
+            print_comment(task.comments)
+
+        return task
+    except grpc.RpcError as e:
+        if(e.code() == grpc.StatusCode.NOT_FOUND ):
+            print(f"❌ Tâche {task_id} introuvable")
+        else : 
+            print(f"❌ Erreur gRPC [{e.code().name}] : {e.details()}")
+        
+        return None
+
+def _read_keywords():
+    # Tant qu'il n'a pas envoyer vide, on attend les autres mots-clés
+    while True:
+        keyword = input("Mot-clé (ligne vide pour terminer) : ").strip()
+        if not keyword:
+            break
+        yield taskflow_pb2.SearchEntry(keyword=keyword)
 
 if __name__ == "__main__":
     main()
