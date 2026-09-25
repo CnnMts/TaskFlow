@@ -78,6 +78,20 @@ def main():
         try:
             choice = input("choix > ").strip()
             if choice == "1":
+                print("--------- Création d'une tâche ---------")
+                title = input("Titre : ").strip()
+                description = input("Description : ").strip()
+                assigned_to = input("Assigné à : ").strip()
+
+                request = taskflow_pb2.CreateTaskRequest(
+                    title=title,
+                    description=description,
+                    assigned_to=assigned_to,
+                    created_by=args.user
+                )
+                response = stub.CreateTask(request, timeout=T)
+                print(f"✅ Tâche créée avec l'id : {response}")
+
                 # ---------- TODO(11) ----------
                 # Demander title/description/assigné, appeler CreateTask
                 # (created_by=args.user, timeout=T), afficher l'id retourné.
