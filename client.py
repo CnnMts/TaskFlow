@@ -91,10 +91,6 @@ def main():
                 )
                 response = stub.CreateTask(request, timeout=T)
                 print(f"✅ Tâche créée avec l'id : {response}")
-
-                # ---------- TODO(11) ----------
-                # Demander title/description/assigné, appeler CreateTask
-                # (created_by=args.user, timeout=T), afficher l'id retourné.
                 pass
             elif choice == "2":
                 # ---------- TODO(12) ----------
