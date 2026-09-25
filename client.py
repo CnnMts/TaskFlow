@@ -42,6 +42,13 @@ def print_task(task):
           f"« {task.title} » → {task.assigned_to or 'non assignée'} "
           f"({len(task.comments)} commentaire(s))")
 
+def print_comment(comments):
+    if not comments:
+        print("    (aucun commentaire)")
+
+    for c in comments:
+        date_str = c.created_at.ToDatetime().isoformat()
+        print(f"    - [{date_str}] {c.author} : {c.text}")
 
 def main():
     parser = argparse.ArgumentParser(description="Client TaskFlow")
@@ -122,9 +129,7 @@ def main():
                 # Filtre vide -> NE PAS affecter le champ optional.
                 pass
             elif choice == "3":
-                # ---------- TODO(13) ----------
-                # GetTask : afficher la tâche ET ses commentaires
-                # (auteur, date ISO via c.created_at.ToDatetime(), texte).
+                task = getTask(stub, T, True)
                 pass
             elif choice == "4":
                 # ---------- TODO(14) ----------
@@ -162,6 +167,28 @@ def main():
             break
     channel.close()
 
+def getTask(stub, T, display=False): 
+    task_id  = input("ID de la tâche : ").strip()
+    if(not task_id):
+        print("❌ ID de tâche vide")
+        return None
+    request = taskflow_pb2.GetTaskRequest(id=task_id)
+    try:
+        task = stub.GetTask(request, timeout=T)
+
+        # Si on doit affiché, on affiche la tâche et ses commentaires
+        if display:
+            print_task(task)
+            print_comment(task.comments)
+
+        return task
+    except grpc.RpcError as e:
+        if(e.code() == grpc.StatusCode.NOT_FOUND ):
+            print(f"❌ Tâche {task_id} introuvable")
+        else : 
+            print(f"❌ Erreur gRPC [{e.code().name}] : {e.details()}")
+        
+        return None
 
 if __name__ == "__main__":
     main()
