@@ -194,8 +194,17 @@ def main():
                     print(f"❌ Erreur gRPC [{e.code().name}] : {e.details()}")
                 pass
             elif choice == "7":
-                # ---------- TODO(17) ----------
-                # DeleteTask (requested_by=args.user).
+                task_id = input("ID de la tâche à supprimer : ").strip()
+                if not task_id:
+                    print("❌ ID de tâche vide")
+                    continue
+
+                request = taskflow_pb2.DeleteTaskRequest(id=task.id, requested_by=args.user)
+                try:
+                    stub.DeleteTask(request)
+                    print(f"✅ Tâche {task.id} supprimée.")
+                except grpc.RpcError as e:
+                    print(f"❌ Erreur gRPC [{e.code().name}] : {e.details()}")
                 pass
             elif choice == "8":
                 # ---------- TODO(18) ----------
