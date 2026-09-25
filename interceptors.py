@@ -6,32 +6,86 @@ from datetime import datetime
 import grpc
 
 
-# ---------- TODO(22) ----------
-# LoggingInterceptor (serveur) : à chaque RPC, afficher
-#   [HH:MM:SS] METHOD  duration=XXms  code=XX  user=YY
-#
-# ⚠️ grpc.ServerInterceptor n'a qu'UNE méthode : intercept_service().
-#    Elle est appelée AVANT le RPC : continuation(handler_call_details)
-#    renvoie un RpcMethodHandler, sans exécuter le RPC. Chronométrer
-#    autour de continuation() donnerait donc toujours ~0 ms.
-#
-# Démarche :
-#   1. handler = continuation(handler_call_details) (None -> return None)
-#   2. selon le type (handler.unary_unary, .unary_stream, .stream_unary,
-#      .stream_stream), envelopper la fonction dans un wrapper qui
-#      chronomètre avec time.perf_counter() :
-#        - réponse unique  : autour de l'appel à la fonction
-#        - réponse en flux : wrapper GÉNÉRATEUR (yield from ...), log à la fin
-#   3. reconstruire le handler avec grpc.unary_unary_rpc_method_handler(
-#        wrapper, handler.request_deserializer, handler.response_serializer)
-#      (idem unary_stream_…, stream_unary_…, stream_stream_…)
-#   4. code : context.code() (None = OK ; exception non-abort = UNKNOWN)
-#   5. user : dict(handler_call_details.invocation_metadata).get("x-user")
-#   Pensez à print(..., flush=True).
+import time
+
 class LoggingInterceptor(grpc.ServerInterceptor):
     def intercept_service(self, continuation, handler_call_details):
-        raise NotImplementedError()
+        handler = continuation(handler_call_details)
+        if handler is None:
+            return None
 
+        method = handler_call_details.method
+        user = dict(handler_call_details.invocation_metadata or {}).get("x-user", "-")
+
+        def log(start, context, default_code):
+            duration_ms = (time.perf_counter() - start) * 1000
+            code = context.code()
+            code_name = code.name if code is not None else default_code
+            print(f"[{time.strftime('%H:%M:%S')}] {method}  "
+                  f"duration={duration_ms:.1f}ms  code={code_name}  user={user}",
+                  flush=True)
+
+        if handler.unary_unary:
+            original = handler.unary_unary
+            def wrapper(request, context):
+                start = time.perf_counter()
+                try:
+                    response = original(request, context)
+                except Exception:
+                    log(start, context, "UNKNOWN")
+                    raise
+                log(start, context, "OK")
+                return response
+            return grpc.unary_unary_rpc_method_handler(
+                wrapper, request_deserializer=handler.request_deserializer,
+                response_serializer=handler.response_serializer)
+
+        if handler.unary_stream:
+            original = handler.unary_stream
+            def wrapper(request, context):
+                start = time.perf_counter()
+                try:
+                    for response in original(request, context):
+                        yield response
+                    log(start, context, "OK")
+                except Exception:
+                    log(start, context, "UNKNOWN")
+                    raise
+            return grpc.unary_stream_rpc_method_handler(
+                wrapper, request_deserializer=handler.request_deserializer,
+                response_serializer=handler.response_serializer)
+
+        if handler.stream_unary:
+            original = handler.stream_unary
+            def wrapper(request_iterator, context):
+                start = time.perf_counter()
+                try:
+                    response = original(request_iterator, context)
+                except Exception:
+                    log(start, context, "UNKNOWN")
+                    raise
+                log(start, context, "OK")
+                return response
+            return grpc.stream_unary_rpc_method_handler(
+                wrapper, request_deserializer=handler.request_deserializer,
+                response_serializer=handler.response_serializer)
+
+        if handler.stream_stream:
+            original = handler.stream_stream
+            def wrapper(request_iterator, context):
+                start = time.perf_counter()
+                try:
+                    for response in original(request_iterator, context):
+                        yield response
+                    log(start, context, "OK")
+                except Exception:
+                    log(start, context, "UNKNOWN")
+                    raise
+            return grpc.stream_stream_rpc_method_handler(
+                wrapper, request_deserializer=handler.request_deserializer,
+                response_serializer=handler.response_serializer)
+
+        return handler
 
 # ---------- TODO(23) ----------
 # HeaderInterceptor (client) : ajoute le metadata ("x-user", <pseudo>) à
