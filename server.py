@@ -5,6 +5,7 @@ import threading
 import time
 import uuid
 from concurrent import futures
+import datetime
 
 import grpc
 from google.protobuf.timestamp_pb2 import Timestamp
@@ -39,135 +40,174 @@ class TaskFlowService(taskflow_pb2_grpc.TaskFlowServicer):
 
     # ---------- TODO(1) ----------
     def CreateTask(self, request, context):
-      if not request.title:
-        context.abort(grpc.StatusCode.INVALID_ARGUMENT, "title is required")
-      if not request.created_by:
-        context.abort(grpc.StatusCode.INVALID_ARGUMENT, "created_by is required")
+        if not request.title:
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT, "title is required")
+        if not request.created_by:
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT, "created_by is required")
 
-      task = Task(
-          id=str(uuid.uuid4()),
-          title=request.title,
-          status=Status.TODO,
-          created_by=request.created_by,
-          created_at=_now(),
-          comments=[],
-      )
-      with self._lock:
-          self._tasks[task.id] = task
-      self._publish("CREATED", task)
-      return CreateTaskResponse(task=self._to_pb(task))
+        task = Task(
+            id=str(uuid.uuid4()),
+            title=request.title,
+            description=request.description,
+            status=Status.TODO,
+            assigned_to=request.assigned_to,
+            created_by=request.created_by,
+            created_at=_now(),
+            comments=[],
+        )
+        with self._lock:
+            self._tasks[task.id] = task
+        self._publish("CREATED", task)
+        return CreateTaskResponse(task=self._to_pb(task))
 
-    
+
     # ---------- TODO(2) ----------
     def GetTask(self, request, context):
-      task = self._get_or_abort(request.id, context)
-      return task
+        task = self._get_or_abort(request.id, context)
+        return self._to_pb(task)
+
 
     # ---------- TODO(3) ----------
     def ListTasks(self, request, context):
-      with self.lock:
-        tasks_snapshot = list(self.tasks)
+        with self._lock:
+            tasks_snapshot = list(self._tasks.values())
+
         status_filter = request.status_filter if request.HasField("status_filter") else None
         assigned_filter = request.assigned_filter if request.HasField("assigned_filter") else None
-      for task in tasks_snapshot:
-        if status_filter is not None and task.status != status_filter:
-            continue
-        if assigned_filter is not None and task.assigned_to != assigned_filter:
-            continue
-        yield task
+
+        for task in tasks_snapshot:
+            if status_filter is not None and task.status != status_filter:
+                continue
+            if assigned_filter is not None and task.assigned_to != assigned_filter:
+                continue
+            yield self._to_pb(task)
+
 
     # ---------- TODO(4) ----------
     def UpdateStatus(self, request, context):
-      task = self._get_or_abort(request.id, context)
-      if request.status_name == task.status_name:
-        context.abort(
-          grpc.StatusCode.INVALID_ARGUMENT,
-          f"Task already in status {task.status_name}",
-          )
+        task = self._get_or_abort(request.id, context)
 
-      if task.status_name == "DONE":
-        context.abort(
-          grpc.StatusCode.INVALID_ARGUMENT,
-          "Cannot reopen a DONE task",
-      )
-      old_status = task.status_name
-      task.status_name = request.status_name
+        with self._lock:
+            if request.new_status == task.status:
+                context.abort(
+                    grpc.StatusCode.INVALID_ARGUMENT,
+                    f"Task already in status {TaskStatus.Name(task.status)}",
+                )
 
-      event = Event(
-          type="STATUS_CHANGED",
-          author=request.requested_by,
-          message=f"{request.requested_by} a passé '{task.title}' à {task.status_name}",
-      )
-      task.events.append(event)
+            if task.status == Status.DONE:
+                context.abort(
+                    grpc.StatusCode.INVALID_ARGUMENT,
+                    "Cannot reopen a DONE task",
+                )
 
-      return task
+            task.status = request.new_status
+
+        self._publish(
+            "STATUS_CHANGED",
+            task,
+            author=request.requested_by,
+            message=f"{request.requested_by} a passé '{task.title}' à {TaskStatus.Name(task.status)}",
+        )
+        return self._to_pb(task)
+
 
     # ---------- TODO(5) ----------
     def AssignTask(self, request, context):
         if not request.new_assignee:
             context.abort(grpc.StatusCode.INVALID_ARGUMENT, "new_assignee is required")
 
-        task = self.tasks.get(request.task_id)
-        if task is None:
-            context.abort(grpc.StatusCode.NOT_FOUND, f"task {request.task_id} not found")
+        task = self._get_or_abort(request.id, context)
 
-        if task.assigned_to == request.new_assignee:
-            context.abort(
-                grpc.StatusCode.INVALID_ARGUMENT,
-                f"task already assigned to {request.new_assignee}",
-            )
+        with self._lock:
+            if task.assigned_to == request.new_assignee:
+                context.abort(
+                    grpc.StatusCode.INVALID_ARGUMENT,
+                    f"task already assigned to {request.new_assignee}",
+                )
+            previous_assignee = task.assigned_to
+            task.assigned_to = request.new_assignee
 
-        previous_assignee = task.assigned_to
-        task.assigned_to = request.new_assignee
-
-        event = self._create_event(
-            task_id=task.id,
-            type="ASSIGNED",
+        self._publish(
+            "ASSIGNED",
+            task,
             author=request.requested_by,
-            metadata={
-                "previous_assignee": previous_assignee,
-                "new_assignee": request.new_assignee,
-            },
+            message=f"{request.requested_by} a assigné '{task.title}' à {request.new_assignee}"
+                    f" (précédemment {previous_assignee or 'personne'})",
         )
-        task.events.append(event)
+        return self._to_pb(task)
 
-        return task
 
-    # ---------- TODO(6) ----------
-    # AddComment : texte vide -> INVALID_ARGUMENT ;
-    # id inconnu -> NOT_FOUND. Ajoutez un dict {author, text, created_at}
-    # à la liste "comments" de la tâche stockée.
-    # Événement "COMMENTED". Renvoie la tâche mise à jour.
+    #---------- TODO(6) ----------
     def AddComment(self, request, context):
-        raise NotImplementedError()
+        if not request.text:
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT, "text is required")
 
+        task = self._get_or_abort(request.id, context)
+
+        comment = Comment(
+            author=request.author,
+            text=request.text,
+            created_at=_now(),
+        )
+
+        with self._lock:
+            task.comments.append(comment)
+
+        self._publish(
+            "COMMENTED",
+            task,
+            author=request.author,
+            message=f"{request.author} a commenté '{task.title}'",
+        )
+        return self._to_pb(task)
     # ---------- TODO(7) ----------
-    # DeleteTask : id inconnu -> NOT_FOUND ;
-    # requested_by différent du créateur -> PERMISSION_DENIED
-    # "only <created_by> can delete this task" ; événement "DELETED".
     def DeleteTask(self, request, context):
-        raise NotImplementedError()
+        task = self.tasks.get(request.id)
+        if task is None:
+            context.abort(grpc.StatusCode.NOT_FOUND, f"task {request.id} not found")
+
+        if request.requested_by != task.created_by:
+            context.abort(grpc.StatusCode.PERMISSION_DENIED,
+                       "only the creator can delete this task")
+
+        del self.tasks[request.id]
+
+        self._emit_event(
+            event_type="DELETED",
+            task_id=request.id,
+            author=request.requested_by,
+            message=f"{request.requested_by} a supprimé '{task.title}'",
+        )
+
+        return taskflow_pb2.Empty()
 
     # ---------- TODO(8) ----------
-    # Subscribe (server streaming infini) — découpé en DEUX méthodes :
-    #
-    # Subscribe (fonction normale, PAS un générateur) :
-    #   1. q = queue.Queue() ; entry = (username, set(event_types), q)
-    #   2. ajouter entry à self._subscribers (sous self._subs_lock)
-    #   3. context.add_callback(lambda: q.put(_STOP))
-    #      -> gRPC appelle ce callback quand le RPC se termine
-    #         (Ctrl+C du client, channel fermé…) : cela débloque q.get()
-    #   4. return self._event_stream(entry)
     def Subscribe(self, request, context):
-        raise NotImplementedError()
+        q = queue.Queue()
+        entry = (request.username, set(request.event_types), q)
+
+        with self._subs_lock:
+            self._subscribers.append(entry)
+
+        context.add_callback(lambda: q.put(_STOP))
+
+        return self._event_stream(entry)
 
     # _event_stream (générateur) :
-    #   try:    boucle : event = q.get() ; si _STOP -> return ;
-    #           si event_types non vide et event.event_type absent -> ignorer ;
-    #           sinon yield event
-    #   finally: retirer entry de self._subscribers (sous self._subs_lock)
     def _event_stream(self, entry):
-        raise NotImplementedError()
+        username, event_types, q = entry
+        try:
+            while True:
+                event = q.get()
+                if event is _STOP:
+                    return
+                if event_types and event.event_type not in event_types:
+                    continue
+                yield event
+        finally:
+            with self._subs_lock:
+                if entry in self._subscribers:
+                    self._subscribers.remove(entry)
 
     # ---------- TODO(9) ----------
     # SearchKeywords (client streaming) :
