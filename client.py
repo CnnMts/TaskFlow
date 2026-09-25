@@ -93,6 +93,29 @@ def main():
                 print(f"✅ Tâche créée avec l'id : {response}")
                 pass
             elif choice == "2":
+                status_input = input("Statut (TODO/IN_PROGRESS/DONE, vide = tous) : ").strip().upper()
+                assigned_to_input = input("Assigné à (vide = tous) : ").strip()
+
+                filterRequest = {}
+                if status_input:
+                    filterRequest["status_filter"] = taskflow_pb2.TaskStatus.Value(status_input)
+                if assigned_to_input:
+                    filterRequest["assigned_filter"] = assigned_to_input
+
+                request = taskflow_pb2.ListTasksRequest(**filterRequest)
+
+                try:
+                    count = 0
+                    for task in stub.ListTasks(request, timeout=T):
+                        count += 1
+                        print_task(task)
+                        print_comment(task.comments)
+                    
+                    if(count == 0):
+                        print("\033[31mAucune tâche trouvée avec les filtres spécifiés.\033[0m")
+                except grpc.RpcError as e:
+                    print(f"❌ Erreur gRPC [{e.code().name}] : {e.details()}")
+
                 # ---------- TODO(12) ----------
                 # Proposer un filtre statut (vide = tous) et un filtre
                 # assigné (vide = tous), appeler ListTasks en streaming.
