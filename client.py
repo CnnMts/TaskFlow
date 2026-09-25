@@ -23,8 +23,18 @@ def print_event(event):
 # Entourez le tout d'un try/except grpc.RpcError : si le serveur tombe,
 # afficher UNE ligne propre (code + details), pas une traceback.
 # (CANCELLED = c'est nous qui quittons : ne rien afficher.)
-def listen_events(stub, username, event_types):
-    raise NotImplementedError()
+def listen_events(stub, username, event_types = []):
+    try:
+        stream = stub.Subscribe(taskflow_pb2.SubscribeRequest(username=username, event_types=event_types))
+        for event in stream:
+            received_events.append(event)
+            print_event(event)
+
+    except grpc.RpcError as e:
+        # (CANCELLED = c'est nous qui quittons : ne rien afficher.)
+        if e.code() == grpc.StatusCode.CANCELLED:
+            return
+        print(f"[listen_events] Connexion au serveur perdue : {e.code()} - {e.details()}")
 
 
 def print_task(task):
